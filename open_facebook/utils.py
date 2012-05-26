@@ -5,7 +5,10 @@ import sys
 logger = logging.getLogger(__name__)
 URL_PARAM_RE = re.compile('(?P<k>[^(=|&)]+)=(?P<v>[^&]+)(&|$)')
 URL_PARAM_NO_VALUE_RE = re.compile('(?P<k>[^(&|?)]+)(&|$)')
+OBJECT_ID_RE = re.compile('[0-9_]+')
 
+def is_valid_id(object_id):
+    return bool(OBJECT_ID_RE.match(object_id))
 
 def base64_url_decode_php_style(inp):
     '''

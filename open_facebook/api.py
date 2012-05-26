@@ -35,7 +35,9 @@ Currently that would be a bad idea though because of maintenance
 from django.http import QueryDict
 from django_facebook import settings as facebook_settings
 from open_facebook import exceptions as facebook_exceptions
-from open_facebook.utils import json, encode_params, send_warning
+from open_facebook.utils import json, encode_params, send_warning, is_valid_id
+from open_facebook.exceptions import ParameterException, PermissionException
+from open_facebook.graph_objects import FBPostObject, FBCommentObject, FBLikeObject
 import logging
 import urllib
 import urllib2
@@ -82,11 +84,11 @@ class FacebookConnection(object):
         '''
         logger.info('requesting url %s with post data %s', url, post_data)
         post_request = (post_data is not None or 'method=post' in url)
-        
+
         if post_request and facebook_settings.FACEBOOK_READ_ONLY:
             response = dict(id=123456789)
             return response
-        
+
         opener = urllib2.build_opener()
         opener.addheaders = [('User-agent', 'Open Facebook Python')]
         # give it a few shots, connection is buggy at times
@@ -410,6 +412,7 @@ class OpenFacebook(FacebookConnection):
     my company: http://www.fashiolista.com/
 
     '''
+
     def __init__(self, access_token=None, prefetched_data=None,
                  expires=None, current_user_id=None):
         self.access_token = access_token
@@ -433,7 +436,7 @@ class OpenFacebook(FacebookConnection):
             if isinstance(e, facebook_exceptions.OAuthException):
                 raise
             me = None
-        
+
         authenticated = bool(me)
         return authenticated
 
@@ -459,7 +462,8 @@ class OpenFacebook(FacebookConnection):
         self.request(*args, **kwargs)
 
     def fql(self, query, **kwargs):
-        """Runs the specified query against the Facebook FQL API.
+        """
+        Runs the specified query against the Facebook FQL API.
         """
         kwargs['format'] = 'JSON'
         kwargs['query'] = query
@@ -490,6 +494,114 @@ class OpenFacebook(FacebookConnection):
 
         url = '%sme/picture?%s' % (self.api_url, query_dict.urlencode())
         return url
+
+    def post(self,post_id=None,target=None,message=None,link=None,privacy='EVERYONE'):
+        '''
+        Get or Send a post to graph api.
+        Check arguments here: https://developers.facebook.com/docs/reference/api/post/
+
+        params:
+
+        str     post_id Post ID, if in args post will be get.
+
+        str     target  Path to put post, required to post be created.
+
+        str     message The message of this post, required to post be created.
+
+        dict    link    One dict with details of a link. The dict should
+                        be in following structure and url field is required:
+                        {
+                            'url': '<the url of the link>',
+                            'name': '<the name of the link>',
+                            'caption': '<the caption of the link (appears beneath the link name)>',
+                            'description': '<a description of the link (appears beneath the link caption)>',
+                        }
+
+        str     privacy Privacy level of post. Should be one of following strings:
+                        EVERYONE, ALL_FRIENDS, NETWORKS_FRIENDS, FRIENDS_OF_FRIENDS, CUSTOM
+                        We don't support CUSTOM yet.
+        '''
+        if post_id and any([target,message,link]):
+            raise ValueError,u'You are trying to get and make a post. Or one or another.'
+        elif post_id and not any([target,message,link]):
+            # get a post
+            if not is_valid_id(post_id):
+                raise ValueError,u'You are trying to get a post but sent a invalid object id.'
+            post = self.get(post_id)
+            if post == False:
+                raise PermissionException,"User '%s' have no rights to read 'post' '%s'." % (self.current_user_id,post_id)
+            return FBPostObject(self,post)
+        elif not post_id and target and message:
+            # make a post
+            if not is_valid_id(target):
+                raise ValueError,u'You are trying to send a post but target not looks post a object id.'
+            kwargs={'message':message,'privacy': privacy}
+            if link and link.get('url'):
+                kwargs['link'] = link['url']
+                kwargs['name'] = link.get('name','')
+                kwargs['caption'] = link.get('caption','')
+                kwargs['description'] = link.get('description','')
+            post_data = self.set('%s/feed' % target,**kwargs)
+            return self.post(post_data['id'])
+
+    def comments(self,comment_id=None,target=None,message=None):
+        '''
+        Get or Send a comment to graph api.
+        Check arguments here: https://developers.facebook.com/docs/reference/api/Comment/
+
+        params:
+
+        str     comment_id Comment ID, if in args comment will be get.
+
+        str     target  Path to comment, required to comment be created.
+
+        str     message The message of this comment, required to comment be created.
+
+        '''
+
+        if comment_id and any([target,message]):
+            raise ValueError,u'You are trying to get and make a comment. Or one or another.'
+        elif comment_id and not all([target,message]):
+            # get a comment
+            if not is_valid_id(comment_id):
+                raise ValueError,u'You are trying to get a comment but sent a invalid object id.'
+            comment = self.get(comment_id)
+            if comment == False:
+                raise PermissionException,"User '%s' have no rights to read 'comment' '%s'." % (self.current_user_id,comment_id)
+            return FBCommentObject(self,comment)
+        elif not comment_id and all([target, message]):
+            # make a comment
+            if not is_valid_id(target):
+                raise ValueError,u'You are trying to send a comment but target not looks comment a object id.'
+            comment_data = self.set('%s/comments' % target, message=message)
+            return self.comments(comment_data['id'])
+        else:
+            raise ParameterException,u"Invalid parameters for comment."
+
+    def likes(self,target=None):
+        '''
+        Send a like to graph api.
+
+        params:
+
+        str     target  Path to like, required to like be created.
+
+        Note: To get who liked and likes count, get object['likes'], ex:
+        >>> post = api.post('792386736_10150941254716737')
+        post.likes
+        >>> post.likes
+        {u'count': 2,
+         u'data': [{u'id': u'100000842851383', u'name': u'Common Zen'},
+          {u'id': u'792386736', u'name': u'Felipe Rafael Prenholato'}]}
+
+        '''
+        if target:
+            if not is_valid_id(target):
+                raise ValueError,u'You are trying to send a like but target not looks like a object id.'
+            return self.set('%s/likes' % target)
+        else:
+            raise ParameterException,u"Invalid parameters for like."
+
 
     def request(self, path='', post_data=None, old_api=False, **params):
         '''
